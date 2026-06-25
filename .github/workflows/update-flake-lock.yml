@@ -1,0 +1,42 @@
+# Reusable workflow: update flake.lock via DeterminateSystems/update-flake-lock.
+#
+# The caller defines the schedule and triggers; this workflow handles the update.
+# Pass secrets.token with a PAT when the repo needs to bypass branch protection.
+#
+# Caller example (Monday schedule):
+#   on:
+#     schedule:
+#       - cron: "0 6 * * 1"
+#     workflow_dispatch:
+#   jobs:
+#     update:
+#       uses: genebean/.github/.github/workflows/update-flake-lock.yml@main
+#       # Optional — only needed when the default GITHUB_TOKEN can't open PRs:
+#       secrets:
+#         token: ${{ secrets.CI_FLAKE_UPDATES }}
+
+on:
+  workflow_call:
+    secrets:
+      token:
+        description: 'Optional PAT for PR creation (falls back to GITHUB_TOKEN)'
+        required: false
+
+jobs:
+  update:
+    name: bump flake.lock
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: DeterminateSystems/update-flake-lock@v28
+        with:
+          pr-title: "chore: update flake.lock"
+          pr-labels: "dependencies,nix"
+          commit-msg: "chore: update flake.lock"
+          sign-commits: true
+          token: ${{ secrets.token || github.token }}
