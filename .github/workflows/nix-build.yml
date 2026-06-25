@@ -1,0 +1,72 @@
+# Reusable workflow: run nix build with flake freshness check.
+#
+# Caller examples:
+#
+#   # Basic (no npmDepsHash, no NixOS config test):
+#   jobs:
+#     nix-build:
+#       uses: genebean/.github/.github/workflows/nix-build.yml@main
+#
+#   # With npmDepsHash guard and NixOS module evaluation:
+#   jobs:
+#     nix-build:
+#       uses: genebean/.github/.github/workflows/nix-build.yml@main
+#       with:
+#         npmDepsHash-glob: pkgs/social-reader.nix
+#         nixos-config-test: true
+#
+#   # nix flake check instead of nix build:
+#   jobs:
+#     nix-build:
+#       uses: genebean/.github/.github/workflows/nix-build.yml@main
+#       with:
+#         npmDepsHash-glob: pkgs/*.nix
+#         build-command: nix flake check
+
+on:
+  workflow_call:
+    inputs:
+      npmDepsHash-glob:
+        description: 'Glob of Nix files to check for placeholder npmDepsHash. Empty = skip.'
+        required: false
+        default: ''
+        type: string
+      build-command:
+        description: 'Primary Nix build command'
+        required: false
+        default: 'nix build'
+        type: string
+      nixos-config-test:
+        description: 'Build .#nixosConfigurations.test to catch module evaluation errors'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  nix-build:
+    name: nix build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: DeterminateSystems/flake-checker-action@v12
+        with:
+          fail-mode: true
+      - name: Ensure npmDepsHash is not the placeholder value
+        if: inputs.npmDepsHash-glob != ''
+        env:
+          GLOB: ${{ inputs.npmDepsHash-glob }}
+        run: |
+          # shellcheck disable=SC2086
+          if grep -qF 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' $GLOB; then
+            echo "::error::npmDepsHash is still the placeholder in ${GLOB}. Run 'nix build', copy the hash, and commit."
+            exit 1
+          fi
+      - name: Build
+        env:
+          BUILD_CMD: ${{ inputs.build-command }}
+        run: $BUILD_CMD
+      - name: NixOS module evaluation
+        if: inputs.nixos-config-test
+        run: nix build .#nixosConfigurations.test.config.system.build.toplevel

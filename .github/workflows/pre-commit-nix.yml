@@ -1,0 +1,33 @@
+# Reusable workflow: run pre-commit hooks in a Nix dev shell.
+#
+# Caller example (with npm deps needed for hooks):
+#   jobs:
+#     pre-commit:
+#       uses: genebean/.github/.github/workflows/pre-commit-nix.yml@main
+#       with:
+#         npm-install: true
+
+on:
+  workflow_call:
+    inputs:
+      npm-install:
+        description: 'Run npm ci --include=dev before pre-commit (needed when hooks require npm packages)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  pre-commit:
+    name: pre-commit hooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install npm dependencies
+        if: inputs.npm-install
+        run: nix develop --command npm ci --include=dev
+      - uses: pre-commit/action@v3.0.1
