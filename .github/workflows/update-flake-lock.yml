@@ -1,8 +1,8 @@
 # Reusable workflow: update Nix flake inputs and derived npm dependency hashes.
 #
 # The caller defines the schedule and triggers; this workflow handles the update.
-# Pass secrets.token with a PAT when generated pull requests should trigger CI
-# automatically. Pass secrets.nix_access_token when the flake reads private
+# Pass secrets.token with a PAT that can write contents and pull requests.
+# The workflow's GITHUB_TOKEN remains read-only. Pass secrets.nix_access_token when the flake reads private
 # GitHub inputs. Repositories with npmDepsHash should explicitly identify both
 # their package-lock.json and the Nix files that contain the derived hash.
 #
@@ -38,8 +38,8 @@ on:
         type: string
     secrets:
       token:
-        description: 'Optional PAT for PR creation (falls back to GITHUB_TOKEN)'
-        required: false
+        description: 'PAT with contents and pull-request write access for PR creation'
+        required: true
       nix_access_token:
         description: 'Optional read token for private GitHub flake inputs'
         required: false
@@ -49,8 +49,7 @@ jobs:
     name: update Nix dependencies
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v23
@@ -163,4 +162,4 @@ jobs:
           labels: "dependencies,nix"
           commit-message: "chore: update Nix dependencies"
           sign-commits: true
-          token: ${{ secrets.token || github.token }}
+          token: ${{ secrets.token }}
