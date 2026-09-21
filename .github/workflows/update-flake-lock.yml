@@ -59,10 +59,13 @@ jobs:
       # Keep the read token out of the environment of earlier third-party
       # actions. Nix reads this per-user configuration when updating inputs.
       - name: Configure private flake authentication
-        if: ${{ secrets.nix_access_token != '' }}
         env:
           NIX_ACCESS_TOKEN: ${{ secrets.nix_access_token }}
         run: |
+          if [[ -z "$NIX_ACCESS_TOKEN" ]]; then
+            exit 0
+          fi
+
           umask 077
           mkdir -p "$HOME/.config/nix"
           printf 'access-tokens = github.com=%s\n' "$NIX_ACCESS_TOKEN" >> "$HOME/.config/nix/nix.conf"
