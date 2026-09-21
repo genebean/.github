@@ -16,7 +16,9 @@
 #       uses: genebean/.github/.github/workflows/update-flake-lock.yml@main
 #       with:
 #         npm-lock-file: package-lock.json
-#         npmDepsHash-glob: pkgs/*.nix
+#         npmDepsHash-glob: |
+#           pkgs/package.nix
+#           pkgs/npm-check.nix
 #       secrets:
 #         token: ${{ secrets.CI_FLAKE_UPDATES }}
 #         nix_access_token: ${{ secrets.CI_PRIVATE_FLAKE_READ }}
@@ -30,7 +32,7 @@ on:
         default: 'package-lock.json'
         type: string
       npmDepsHash-glob:
-        description: 'Glob of Nix files whose single npmDepsHash assignment should be refreshed. Empty = skip.'
+        description: 'Newline-separated globs of Nix files whose single npmDepsHash assignment should be refreshed. Empty = skip.'
         required: false
         default: ''
         type: string
@@ -98,14 +100,28 @@ jobs:
           import re
           import sys
 
-          pattern = os.environ["NPM_DEPS_HASH_GLOB"]
-          if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
-              raise SystemExit("npmDepsHash-glob must stay within the repository")
+          patterns = [
+              line.strip()
+              for line in os.environ["NPM_DEPS_HASH_GLOB"].splitlines()
+              if line.strip()
+          ]
+          if not patterns:
+              raise SystemExit("npmDepsHash-glob contains no patterns")
 
           root = Path.cwd().resolve()
-          paths = sorted({Path(match) for match in glob.glob(pattern, recursive=True)})
-          if not paths:
-              raise SystemExit(f"npmDepsHash-glob matched no files: {pattern}")
+          matched_paths = set()
+          for pattern in patterns:
+              if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+                  raise SystemExit(
+                      f"npmDepsHash-glob pattern must stay within the repository: {pattern}"
+                  )
+
+              matches = {Path(match) for match in glob.glob(pattern, recursive=True)}
+              if not matches:
+                  raise SystemExit(f"npmDepsHash-glob pattern matched no files: {pattern}")
+              matched_paths.update(matches)
+
+          paths = sorted(matched_paths)
 
           assignment = re.compile(
               r'(?m)^(?P<prefix>\s*npmDepsHash\s*=\s*)"[^"]*"(?P<suffix>\s*;\s*(?:#.*)?)$'
