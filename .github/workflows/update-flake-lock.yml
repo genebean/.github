@@ -53,7 +53,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v23
-      - uses: DeterminateSystems/magic-nix-cache-action@v15
 
       # Keep the read token out of the environment of earlier third-party
       # actions. Nix reads this per-user configuration when updating inputs.
