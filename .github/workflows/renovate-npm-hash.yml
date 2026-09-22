@@ -1,0 +1,177 @@
+# Reusable workflow: refresh npmDepsHash on trusted Renovate pull requests.
+#
+# Call this from a small pull_request_target workflow in repositories that
+# package npm dependencies with buildNpmPackage. The caller must restrict its
+# paths to the configured lock file and pass a PAT through secrets.token.
+#
+# This workflow never executes project code. It only reads the configured npm
+# lock file, runs prefetch-npm-deps, and edits explicitly configured Nix files.
+# The write token is exposed only to the final commit-and-push step.
+#
+# Caller example:
+#   on:
+#     pull_request_target:
+#       types: [opened, synchronize, reopened]
+#       paths:
+#         - package-lock.json
+#   jobs:
+#     refresh-npm-hash:
+#       uses: genebean/.github/.github/workflows/renovate-npm-hash.yml@main
+#       with:
+#         npm-lock-file: package-lock.json
+#         npmDepsHash-glob: pkgs/package.nix
+#       secrets:
+#         token: ${{ secrets.CI_FLAKE_UPDATES }}
+
+name: Refresh Renovate npm dependency hash
+
+on:
+  workflow_call:
+    inputs:
+      npm-lock-file:
+        description: 'Repository-relative package-lock.json path'
+        required: false
+        default: 'package-lock.json'
+        type: string
+      npmDepsHash-glob:
+        description: 'Newline-separated globs of Nix files whose single npmDepsHash assignment should be refreshed'
+        required: true
+        type: string
+    secrets:
+      token:
+        description: 'PAT with contents write access for updating same-repository Renovate branches'
+        required: true
+
+concurrency:
+  group: renovate-npm-hash-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    name: refresh npmDepsHash
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.user.login == 'renovate[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'renovate/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: DeterminateSystems/nix-installer-action@v23
+
+      - name: Verify configured lock file changed
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          NPM_LOCK_FILE: ${{ inputs.npm-lock-file }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$NPM_LOCK_FILE" = /* || "$NPM_LOCK_FILE" == *".."* ]]; then
+            echo "::error::npm-lock-file must be a repository-relative path without '..'"
+            exit 1
+          fi
+          if [[ ! -f "$NPM_LOCK_FILE" ]]; then
+            echo "::error::npm lock file not found: $NPM_LOCK_FILE"
+            exit 1
+          fi
+          if git diff --quiet "$BASE_SHA" HEAD -- "$NPM_LOCK_FILE"; then
+            echo "::error::configured npm lock file was not changed by this pull request: $NPM_LOCK_FILE"
+            exit 1
+          fi
+
+      - name: Refresh npm dependency hashes
+        id: refresh
+        env:
+          NPM_DEPS_HASH_GLOB: ${{ inputs.npmDepsHash-glob }}
+          NPM_LOCK_FILE: ${{ inputs.npm-lock-file }}
+        run: |
+          set -euo pipefail
+
+          npm_deps_hash="$(nix run nixpkgs#prefetch-npm-deps -- "$NPM_LOCK_FILE")"
+          if [[ ! "$npm_deps_hash" =~ ^sha256-[A-Za-z0-9+/=]+$ ]]; then
+            echo "::error::prefetch-npm-deps returned an unexpected hash"
+            exit 1
+          fi
+
+          python3 - "$npm_deps_hash" <<'PY'
+          import glob
+          import os
+          from pathlib import Path
+          import re
+          import sys
+
+          patterns = [
+              line.strip()
+              for line in os.environ["NPM_DEPS_HASH_GLOB"].splitlines()
+              if line.strip()
+          ]
+          if not patterns:
+              raise SystemExit("npmDepsHash-glob contains no patterns")
+
+          root = Path.cwd().resolve()
+          lock_file = Path(os.environ["NPM_LOCK_FILE"]).resolve()
+          if not lock_file.is_relative_to(root) or not lock_file.is_file():
+              raise SystemExit("refusing non-file or out-of-repository npm lock file")
+
+          matched_paths = set()
+          for pattern in patterns:
+              if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+                  raise SystemExit(
+                      f"npmDepsHash-glob pattern must stay within the repository: {pattern}"
+                  )
+
+              matches = {Path(match) for match in glob.glob(pattern, recursive=True)}
+              if not matches:
+                  raise SystemExit(f"npmDepsHash-glob pattern matched no files: {pattern}")
+              matched_paths.update(matches)
+
+          assignment = re.compile(
+              r'(?m)^(?P<prefix>\s*npmDepsHash\s*=\s*)"[^"]*"(?P<suffix>\s*;\s*(?:#.*)?)$'
+          )
+          new_hash = sys.argv[1]
+
+          for path in sorted(matched_paths):
+              resolved = path.resolve()
+              if not resolved.is_relative_to(root) or not resolved.is_file():
+                  raise SystemExit(f"refusing non-file or out-of-repository match: {path}")
+
+              original = path.read_text()
+              updated, count = assignment.subn(
+                  lambda match: f'{match.group("prefix")}"{new_hash}"{match.group("suffix")}',
+                  original,
+              )
+              if count != 1:
+                  raise SystemExit(
+                      f"expected exactly one npmDepsHash assignment in {path}, found {count}"
+                  )
+
+              path.write_text(updated)
+              print(f"updated {path}")
+          PY
+
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push refreshed hashes
+        if: steps.refresh.outputs.changed == 'true'
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PUSH_TOKEN: ${{ secrets.token }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- '*.nix'
+          git commit -m "chore: refresh npm dependency hash"
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${HEAD_REF}"
