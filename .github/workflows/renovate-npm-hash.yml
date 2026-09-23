@@ -1,14 +1,13 @@
-# Reusable workflow: refresh npm lock files and npmDepsHash values on trusted Renovate pull requests.
+# Reusable workflow: refresh npmDepsHash values on trusted Renovate pull requests.
 #
 # Call this from a small pull_request_target workflow in repositories that
 # package npm dependencies with buildNpmPackage. The caller must restrict its
 # paths to the configured package.json and package-lock.json files and pass a
 # PAT through secrets.token.
 #
-# This workflow never executes project code. It runs npm with lifecycle scripts
-# disabled, reads the configured npm lock file, runs prefetch-npm-deps, and edits
-# explicitly configured Nix files. The write token is exposed only to the final
-# commit-and-push step.
+# This workflow never executes project code. It reads the Renovate-generated
+# npm lock file, runs prefetch-npm-deps, and edits explicitly configured Nix files.
+# The write token is exposed only to the final commit-and-push step.
 #
 # Caller example:
 #   on:
@@ -51,7 +50,7 @@ concurrency:
 
 jobs:
   refresh:
-    name: refresh npm lock and npmDepsHash
+    name: refresh npmDepsHash
     if: >-
       github.event_name == 'pull_request_target' &&
       github.event.pull_request.user.login == 'renovate[bot]' &&
@@ -90,24 +89,10 @@ jobs:
             echo "::error::npm package file not found next to lock file: $npm_package_file"
             exit 1
           fi
-          if git diff --quiet "$BASE_SHA" HEAD -- "$npm_package_file" "$NPM_LOCK_FILE"; then
-            echo "::error::neither configured npm file was changed by this pull request"
+          if git diff --quiet "$BASE_SHA" HEAD -- "$NPM_LOCK_FILE"; then
+            echo "::error::configured npm lock file was not changed by Renovate"
             exit 1
           fi
-
-      - name: Refresh npm lock file
-        env:
-          NPM_LOCK_FILE: ${{ inputs.npm-lock-file }}
-        run: |
-          set -euo pipefail
-
-          npm_directory="$(dirname "$NPM_LOCK_FILE")"
-          npm install \
-            --package-lock-only \
-            --ignore-scripts \
-            --no-audit \
-            --no-fund \
-            --prefix "$npm_directory"
 
       - name: Refresh npm dependency hashes
         id: refresh
@@ -185,17 +170,16 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Commit and push refreshed npm files
+      - name: Commit and push refreshed npm dependency hashes
         if: steps.refresh.outputs.changed == 'true'
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          NPM_LOCK_FILE: ${{ inputs.npm-lock-file }}
           PUSH_TOKEN: ${{ secrets.token }}
         run: |
           set -euo pipefail
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- "$NPM_LOCK_FILE" '*.nix'
-          git commit -m "chore: refresh npm lock and dependency hash"
+          git add -- '*.nix'
+          git commit -m "chore: refresh npm dependency hash"
           git push "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${HEAD_REF}"
