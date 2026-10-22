@@ -9,5 +9,9 @@
       "groupName": "GitHub Actions",
       "matchManagers": ["github-actions"]
     }
+  ],
+  "allowedCommands": [
+    "^nix flake lock --update-input [\\w.-]+$",
+    "^bash scripts/renovate-sync-[\\w.-]+\\.sh \\S+$"
   ]
 }
