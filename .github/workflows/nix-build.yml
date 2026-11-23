@@ -58,10 +58,15 @@ jobs:
       # callers that haven't set ATTIC_TOKEN (or a fork PR, which never gets
       # secrets) still build fine, just without the speedup.
       - name: Configure Attic cache (pull)
-        if: ${{ secrets.ATTIC_TOKEN != '' }}
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
         run: |
+          # secrets can't be referenced in `if:` directly - checking here
+          # instead lets callers/forks without the secret build unaffected.
+          if [ -z "$ATTIC_TOKEN" ]; then
+            echo "No ATTIC_TOKEN secret - skipping Attic pull config."
+            exit 0
+          fi
           echo "machine attic.home.technicalissues.us password $ATTIC_TOKEN" > "$HOME/.netrc"
           chmod 600 "$HOME/.netrc"
           {
@@ -94,9 +99,13 @@ jobs:
       # Only meaningful when build-command left ./result behind - nix flake
       # check callers have nothing to push.
       - name: Push to Attic
-        if: ${{ secrets.ATTIC_TOKEN != '' && inputs.build-command == 'nix build' }}
+        if: ${{ inputs.build-command == 'nix build' }}
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
         run: |
+          if [ -z "$ATTIC_TOKEN" ]; then
+            echo "No ATTIC_TOKEN secret - skipping Attic push."
+            exit 0
+          fi
           nix run nixpkgs#attic-client -- login genebean https://attic.home.technicalissues.us "$ATTIC_TOKEN" --set-default
           nix run nixpkgs#attic-client -- push genebean ./result
