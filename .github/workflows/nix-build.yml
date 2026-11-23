@@ -41,6 +41,10 @@ on:
         required: false
         default: false
         type: boolean
+    secrets:
+      ATTIC_TOKEN:
+        description: 'Push+pull token for the genebean Attic cache (attic.home.technicalissues.us). Optional - caller passes it with `secrets: inherit`.'
+        required: false
 
 jobs:
   nix-build:
@@ -49,6 +53,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v23
+      # Pull config has to land before any build/check step below so they can
+      # actually substitute from the cache. Gated on the secret existing so
+      # callers that haven't set ATTIC_TOKEN (or a fork PR, which never gets
+      # secrets) still build fine, just without the speedup.
+      - name: Configure Attic cache (pull)
+        if: ${{ secrets.ATTIC_TOKEN != '' }}
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+        run: |
+          echo "machine attic.home.technicalissues.us password $ATTIC_TOKEN" > "$HOME/.netrc"
+          chmod 600 "$HOME/.netrc"
+          {
+            echo "NIX_CONFIG<<ATTIC_NIX_CONFIG_EOF"
+            echo "extra-substituters = https://attic.home.technicalissues.us/genebean"
+            echo "extra-trusted-public-keys = genebean:bS9FNZbGEXaJzMJzN5eEva28eCKqDlRC61uC8NdWWL4="
+            echo "netrc-file = $HOME/.netrc"
+            echo "ATTIC_NIX_CONFIG_EOF"
+          } >> "$GITHUB_ENV"
       - uses: DeterminateSystems/flake-checker-action@v14
         with:
           fail-mode: true
@@ -69,3 +91,12 @@ jobs:
       - name: NixOS module evaluation
         if: inputs.nixos-config-test
         run: nix build .#nixosConfigurations.test.config.system.build.toplevel
+      # Only meaningful when build-command left ./result behind - nix flake
+      # check callers have nothing to push.
+      - name: Push to Attic
+        if: ${{ secrets.ATTIC_TOKEN != '' && inputs.build-command == 'nix build' }}
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+        run: |
+          nix run nixpkgs#attic-client -- login genebean https://attic.home.technicalissues.us "$ATTIC_TOKEN" --set-default
+          nix run nixpkgs#attic-client -- push genebean ./result
